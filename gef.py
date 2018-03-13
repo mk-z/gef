@@ -1340,6 +1340,8 @@ class Architecture(object):
     @abc.abstractmethod
     def is_call(self, insn):                       pass
     @abc.abstractmethod
+    def is_ret(self, insn):                       pass
+    @abc.abstractmethod
     def is_conditional_branch(self, insn):         pass
     @abc.abstractmethod
     def is_branch_taken(self, insn):               pass
@@ -1394,6 +1396,10 @@ class ARM(Architecture):
         mnemo = insn.mnemo
         call_mnemos = {"bl", "blx"}
         return mnemo in call_mnemos
+
+    def is_ret(self, insn):
+        # bl lr, bx lr, pop ... pc
+        import pdb; pdb.set_trace()
 
     def flag_register_to_human(self, val=None):
         # http://www.botskool.com/user-pages/tutorials/electronics/arm-7-tutorial-part-1
@@ -1562,6 +1568,9 @@ class X86(Architecture):
         call_mnemos = {"call", "callq"}
         return mnemo in call_mnemos
 
+    def is_ret(self, insn):
+        return insn.mnemo == "ret"
+
     def is_conditional_branch(self, insn):
         mnemo = insn.mnemo
         branch_mnemos = {
@@ -1725,6 +1734,9 @@ class PowerPC(Architecture):
     def is_call(self, insn):
         return False
 
+    def is_ret(self, insn):
+        return insn.mnemo == "blr"
+
     def is_conditional_branch(self, insn):
         mnemo = insn.mnemo
         branch_mnemos = {"beq", "bne", "ble", "blt", "bgt", "bge"}
@@ -1803,6 +1815,10 @@ class SPARC(Architecture):
 
     def is_call(self, insn):
         return False
+
+    def is_ret(self, insn):
+        # TODO: rett?
+        return insn.mnemo == "ret"
 
     def is_conditional_branch(self, insn):
         mnemo = insn.mnemo
@@ -1905,6 +1921,9 @@ class MIPS(Architecture):
 
     def is_call(self, insn):
         return False
+
+    def is_ret(self, insn):
+        return insn.mnemo == "jr" and insn.operands[0] == "$ra"
 
     def is_conditional_branch(self, insn):
         mnemo = insn.mnemo
@@ -6461,6 +6480,7 @@ class ContextCommand(GenericCommand):
         self.add_setting("show_stack_raw", False, "Show the stack pane as raw hexdump (no dereference)")
         self.add_setting("show_registers_raw", False, "Show the registers pane with raw values (no dereference)")
         self.add_setting("peek_calls", True, "Peek into calls")
+        self.add_setting("peek_ret", True, "Peek at return address")
         self.add_setting("nb_lines_stack", 8, "Number of line in the stack pane")
         self.add_setting("grow_stack_down", False, "Order of stack downward starts at largest down to stack pointer")
         self.add_setting("nb_lines_backtrace", 10, "Number of line in the backtrace pane")
@@ -6657,6 +6677,7 @@ class ContextCommand(GenericCommand):
                 line = []
                 is_branch = False
                 is_taken  = False
+                target    = None
                 text = str(insn)
 
                 if insn.address < pc:
@@ -6673,8 +6694,14 @@ class ContextCommand(GenericCommand):
                         else:
                             reason = "[Reason: !({:s})]".format(reason) if reason else ""
                             line += Color.colorify("\tNOT taken {:s}".format(reason), attrs="bold red")
+                    elif current_arch.is_branch(insn):
+                        is_taken = True
                     elif current_arch.is_call(insn) and self.get_setting("peek_calls") == True:
                         is_taken = True
+                    elif current_arch.is_ret(insn) and self.get_setting("peek_ret") == True:
+                        if frame.older():
+                            is_taken = True
+                            target = frame.older().pc()
 
                 else:
                     line += "   {}".format(text)
@@ -6682,13 +6709,14 @@ class ContextCommand(GenericCommand):
                 print("".join(line))
 
                 if is_taken:
-                    target = insn.operands[-1].split()[0]
-                    try:
-                        target = int(target, 16)
-                    except ValueError:
-                        # If the operand isn't an address right now we can't parse it
-                        is_taken = False
-                        continue
+                    if not target:
+                        target = insn.operands[-1].split()[0]
+                        try:
+                            target = int(target, 16)
+                        except ValueError:
+                            # If the operand isn't an address right now we can't parse it
+                            is_taken = False
+                            continue
                     for i, insn in enumerate(instruction_iterator(target, nb_insn)):
                         text= "   {}  {}".format (down_arrow if i==0 else " ", str(insn))
                         print(text)
